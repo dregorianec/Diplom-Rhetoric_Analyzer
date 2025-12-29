@@ -1,5 +1,5 @@
 """
-Ingest Service - Video download and metadata extraction via Invidious API
+Ingest Service - Video download and metadata extraction via Invidious/Piped API
 """
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 app = FastAPI(
     title="Rhetoric Analyzer - Ingest Service",
-    description="Service for downloading videos and extracting metadata via Invidious",
+    description="Service for downloading videos and extracting metadata via Invidious/Piped",
     version="1.0.0"
 )
 
@@ -39,96 +39,146 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Invidious instances (fallback list)
+# Proxy settings (set in environment)
+PROXY_URL = os.getenv("PROXY_URL", None)  # e.g., "socks5://127.0.0.1:1080"
+
+# Piped API instances (usually work better)
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.yt",
+    "https://pipedapi.in.projectsegfau.lt",
+    "https://pipedapi.adminforge.de",
+    "https://api.piped.privacydev.net",
+]
+
+# Invidious instances (fallback)
 INVIDIOUS_INSTANCES = [
-    "https://inv.nadeko.net",
-    "https://invidious.nerdvpn.de", 
-    "https://invidious.privacyredirect.com",
     "https://vid.puffyan.us",
-    "https://invidious.lunar.icu",
+    "https://yewtu.be",
+    "https://invidious.snopyta.org",
+    "https://invidious.kavin.rocks",
+    "https://inv.riverside.rocks",
 ]
 
 # In-memory task storage (replace with Redis/DB in production)
 tasks: dict[UUID, DownloadTask] = {}
 
+# Cache for working instances
+_working_piped: Optional[str] = None
+_working_invidious: Optional[str] = None
 
-async def get_working_instance() -> str:
+
+def get_http_client_kwargs() -> dict:
+    """Get httpx client kwargs with optional proxy"""
+    kwargs = {"timeout": 15.0}
+    if PROXY_URL:
+        kwargs["proxies"] = {"all://": PROXY_URL}
+    return kwargs
+
+
+async def find_working_piped() -> Optional[str]:
+    """Find a working Piped instance"""
+    global _working_piped
+    if _working_piped:
+        return _working_piped
+    
+    async with httpx.AsyncClient(**get_http_client_kwargs()) as client:
+        for instance in PIPED_INSTANCES:
+            try:
+                response = await client.get(f"{instance}/healthcheck")
+                if response.status_code == 200:
+                    _working_piped = instance
+                    print(f"Found working Piped: {instance}")
+                    return instance
+            except Exception as e:
+                print(f"Piped {instance} failed: {e}")
+                continue
+    return None
+
+
+async def find_working_invidious() -> Optional[str]:
     """Find a working Invidious instance"""
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    global _working_invidious
+    if _working_invidious:
+        return _working_invidious
+    
+    async with httpx.AsyncClient(**get_http_client_kwargs()) as client:
         for instance in INVIDIOUS_INSTANCES:
             try:
                 response = await client.get(f"{instance}/api/v1/stats")
                 if response.status_code == 200:
+                    _working_invidious = instance
+                    print(f"Found working Invidious: {instance}")
                     return instance
-            except Exception:
+            except Exception as e:
+                print(f"Invidious {instance} failed: {e}")
                 continue
-    raise HTTPException(
-        status_code=503, 
-        detail="No working Invidious instance found. Try again later."
-    )
+    return None
 
 
-@app.get("/health", response_model=HealthCheck)
-async def health_check():
-    """Health check endpoint"""
-    return HealthCheck(
-        service="ingest",
-        status="healthy",
-        timestamp=datetime.utcnow()
-    )
-
-
-@app.get("/instances")
-async def list_instances():
-    """List available Invidious instances and their status"""
-    results = []
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        for instance in INVIDIOUS_INSTANCES:
-            try:
-                response = await client.get(f"{instance}/api/v1/stats")
-                results.append({
-                    "url": instance,
-                    "status": "online" if response.status_code == 200 else "error",
-                })
-            except Exception:
-                results.append({"url": instance, "status": "offline"})
-    return results
-
-
-@app.post("/search", response_model=list[VideoMetadata])
-async def search_videos(request: SearchRequest):
-    """
-    Search for videos using Invidious API
+async def search_piped(query: str, max_results: int) -> list[VideoMetadata]:
+    """Search via Piped API"""
+    instance = await find_working_piped()
+    if not instance:
+        return []
     
-    Args:
-        request: Search query and max results
-    
-    Returns:
-        List of video metadata
-    """
-    instance = await get_working_instance()
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(**get_http_client_kwargs()) as client:
         try:
             response = await client.get(
-                f"{instance}/api/v1/search",
-                params={
-                    "q": request.query,
-                    "type": "video",
-                    "sort_by": "relevance",
-                }
+                f"{instance}/search",
+                params={"q": query, "filter": "videos"}
             )
             response.raise_for_status()
             data = response.json()
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Invidious API error: {str(e)}")
+        except Exception as e:
+            print(f"Piped search error: {e}")
+            return []
     
     videos = []
-    for item in data[:request.max_results]:
+    items = data.get("items", [])[:max_results]
+    
+    for item in items:
+        video_id = item.get("url", "").replace("/watch?v=", "")
+        if not video_id:
+            continue
+            
+        videos.append(VideoMetadata(
+            video_id=video_id,
+            title=item.get("title", "Unknown"),
+            channel=item.get("uploaderName", "Unknown"),
+            upload_date=datetime.utcnow(),  # Piped doesn't return exact date
+            duration=item.get("duration", 0),
+            description=item.get("shortDescription", ""),
+            url=f"https://www.youtube.com/watch?v={video_id}",
+            thumbnail_url=item.get("thumbnail", "")
+        ))
+    
+    return videos
+
+
+async def search_invidious(query: str, max_results: int) -> list[VideoMetadata]:
+    """Search via Invidious API"""
+    instance = await find_working_invidious()
+    if not instance:
+        return []
+    
+    async with httpx.AsyncClient(**get_http_client_kwargs()) as client:
+        try:
+            response = await client.get(
+                f"{instance}/api/v1/search",
+                params={"q": query, "type": "video", "sort_by": "relevance"}
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            print(f"Invidious search error: {e}")
+            return []
+    
+    videos = []
+    for item in data[:max_results]:
         if item.get("type") != "video":
             continue
             
-        # Parse upload date
         upload_date = datetime.utcnow()
         if item.get("published"):
             try:
@@ -150,44 +200,112 @@ async def search_videos(request: SearchRequest):
     return videos
 
 
+@app.get("/health", response_model=HealthCheck)
+async def health_check():
+    """Health check endpoint"""
+    return HealthCheck(
+        service="ingest",
+        status="healthy",
+        timestamp=datetime.utcnow()
+    )
+
+
+@app.get("/instances")
+async def list_instances():
+    """List available API instances and their status"""
+    results = {"piped": [], "invidious": [], "proxy_configured": PROXY_URL is not None}
+    
+    async with httpx.AsyncClient(**get_http_client_kwargs()) as client:
+        # Check Piped
+        for instance in PIPED_INSTANCES:
+            try:
+                response = await client.get(f"{instance}/healthcheck", timeout=5.0)
+                results["piped"].append({
+                    "url": instance,
+                    "status": "online" if response.status_code == 200 else "error"
+                })
+            except Exception:
+                results["piped"].append({"url": instance, "status": "offline"})
+        
+        # Check Invidious
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                response = await client.get(f"{instance}/api/v1/stats", timeout=5.0)
+                results["invidious"].append({
+                    "url": instance,
+                    "status": "online" if response.status_code == 200 else "error"
+                })
+            except Exception:
+                results["invidious"].append({"url": instance, "status": "offline"})
+    
+    return results
+
+
+@app.post("/search", response_model=list[VideoMetadata])
+async def search_videos(request: SearchRequest):
+    """
+    Search for videos using Piped/Invidious API
+    
+    Tries Piped first, falls back to Invidious
+    """
+    # Try Piped first
+    videos = await search_piped(request.query, request.max_results)
+    if videos:
+        return videos
+    
+    # Fallback to Invidious
+    videos = await search_invidious(request.query, request.max_results)
+    if videos:
+        return videos
+    
+    # All APIs failed
+    raise HTTPException(
+        status_code=503,
+        detail="All video APIs are unavailable. Try using /upload to upload files directly, or configure PROXY_URL."
+    )
+
+
 @app.get("/video/{video_id}", response_model=VideoMetadata)
 async def get_video_info(video_id: str):
-    """
-    Get detailed video information
+    """Get detailed video information using yt-dlp (works without API)"""
+    try:
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(None, get_video_info_ytdlp, video_id)
+        
+        upload_date = datetime.utcnow()
+        if info.get("upload_date"):
+            try:
+                upload_date = datetime.strptime(info["upload_date"], "%Y%m%d")
+            except Exception:
+                pass
+        
+        return VideoMetadata(
+            video_id=video_id,
+            title=info.get("title", "Unknown"),
+            channel=info.get("uploader", "Unknown"),
+            upload_date=upload_date,
+            duration=info.get("duration", 0),
+            description=info.get("description", ""),
+            url=f"https://www.youtube.com/watch?v={video_id}",
+            thumbnail_url=info.get("thumbnail", "")
+        )
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Video not found: {str(e)}")
+
+
+def get_video_info_ytdlp(video_id: str) -> dict:
+    """Get video info using yt-dlp (no download)"""
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,
+        'skip_download': True,
+    }
+    if PROXY_URL:
+        ydl_opts['proxy'] = PROXY_URL
     
-    Args:
-        video_id: YouTube video ID
-    
-    Returns:
-        Video metadata
-    """
-    instance = await get_working_instance()
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.get(f"{instance}/api/v1/videos/{video_id}")
-            response.raise_for_status()
-            item = response.json()
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail=f"Invidious API error: {str(e)}")
-    
-    upload_date = datetime.utcnow()
-    if item.get("published"):
-        try:
-            upload_date = datetime.fromtimestamp(item["published"])
-        except Exception:
-            pass
-    
-    return VideoMetadata(
-        video_id=item.get("videoId", video_id),
-        title=item.get("title", "Unknown"),
-        channel=item.get("author", "Unknown"),
-        upload_date=upload_date,
-        duration=item.get("lengthSeconds", 0),
-        description=item.get("description", ""),
-        url=f"https://www.youtube.com/watch?v={video_id}",
-        thumbnail_url=item.get("videoThumbnails", [{}])[0].get("url", "")
-    )
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
 
 
 def extract_video_id(url: str) -> str:
@@ -205,11 +323,7 @@ def extract_video_id(url: str) -> str:
 
 
 def download_audio_sync(video_url: str, output_path: str) -> dict:
-    """
-    Download audio from video using yt-dlp (synchronous)
-    
-    Returns metadata dict
-    """
+    """Download audio from video using yt-dlp (synchronous)"""
     ydl_opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
@@ -220,9 +334,9 @@ def download_audio_sync(video_url: str, output_path: str) -> dict:
         'outtmpl': output_path.replace('.mp3', ''),
         'quiet': True,
         'no_warnings': True,
-        # Proxy support (uncomment if needed)
-        # 'proxy': os.getenv('PROXY_URL'),
     }
+    if PROXY_URL:
+        ydl_opts['proxy'] = PROXY_URL
     
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
@@ -240,15 +354,12 @@ async def process_download(task_id: UUID, video_url: str, politician_name: str):
     task.status = TaskStatus.PROCESSING
     
     try:
-        # Extract video ID
         video_id = extract_video_id(video_url)
         task.video_id = video_id
         
-        # Create temp file for download
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = os.path.join(tmpdir, f"{video_id}.mp3")
             
-            # Download audio (run in thread pool to not block)
             loop = asyncio.get_event_loop()
             metadata = await loop.run_in_executor(
                 None, 
@@ -257,19 +368,16 @@ async def process_download(task_id: UUID, video_url: str, politician_name: str):
                 output_path
             )
             
-            # Actual output file (yt-dlp adds .mp3)
             actual_path = output_path
             if not os.path.exists(actual_path):
                 actual_path = output_path.replace('.mp3', '') + '.mp3'
             
-            # Upload to MinIO
             object_name = f"audio/{politician_name}/{video_id}.mp3"
             
             try:
                 storage_client.upload_file(actual_path, object_name)
                 task.audio_path = object_name
             except Exception as e:
-                # MinIO might not be configured, save local path for now
                 task.audio_path = f"local:{actual_path}"
                 print(f"MinIO upload failed, using local: {e}")
         
@@ -287,11 +395,7 @@ async def download_video(request: IngestRequest, background_tasks: BackgroundTas
     """
     Download video from YouTube
     
-    Args:
-        request: Video URL and politician name
-    
-    Returns:
-        Download task with status
+    Uses yt-dlp which often works even without VPN
     """
     task_id = uuid4()
     
@@ -309,7 +413,6 @@ async def download_video(request: IngestRequest, background_tasks: BackgroundTas
     
     tasks[task_id] = task
     
-    # Start background download
     background_tasks.add_task(
         process_download, 
         task_id, 
@@ -327,15 +430,9 @@ async def upload_file(
     title: str = Form(default="Uploaded file")
 ):
     """
-    Upload audio/video file directly (alternative to YouTube download)
+    Upload audio/video file directly (best option if APIs are blocked)
     
-    Args:
-        file: Audio or video file
-        politician_name: Name of the politician
-        title: Optional title for the file
-    
-    Returns:
-        Upload task with status
+    Supports: mp3, wav, mp4, webm, ogg, m4a
     """
     task_id = uuid4()
     video_id = f"upload_{task_id.hex[:8]}"
@@ -349,14 +446,14 @@ async def upload_file(
     tasks[task_id] = task
     
     try:
-        # Save uploaded file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
+        ext = os.path.splitext(file.filename)[1] if file.filename else ".mp3"
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             content = await file.read()
             tmp.write(content)
             tmp_path = tmp.name
         
-        # Upload to MinIO
-        object_name = f"audio/{politician_name}/{video_id}{os.path.splitext(file.filename)[1]}"
+        object_name = f"audio/{politician_name}/{video_id}{ext}"
         
         try:
             storage_client.upload_file(tmp_path, object_name)
@@ -378,36 +475,28 @@ async def upload_file(
 
 @app.get("/task/{task_id}", response_model=DownloadTask)
 async def get_task_status(task_id: UUID):
-    """
-    Get download task status
-    
-    Args:
-        task_id: UUID of the task
-    
-    Returns:
-        Task status
-    """
+    """Get download task status"""
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="Task not found")
-    
     return tasks[task_id]
 
 
 @app.get("/tasks", response_model=list[DownloadTask])
 async def list_tasks(status: Optional[TaskStatus] = None):
-    """
-    List all download tasks
-    
-    Args:
-        status: Optional filter by status
-    
-    Returns:
-        List of tasks
-    """
+    """List all download tasks"""
     result = list(tasks.values())
     if status:
         result = [t for t in result if t.status == status]
     return sorted(result, key=lambda x: x.created_at, reverse=True)
+
+
+@app.post("/reset-cache")
+async def reset_instance_cache():
+    """Reset cached API instances (try finding new working ones)"""
+    global _working_piped, _working_invidious
+    _working_piped = None
+    _working_invidious = None
+    return {"message": "Cache cleared. Next request will try all instances."}
 
 
 if __name__ == "__main__":

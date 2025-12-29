@@ -47,7 +47,7 @@
 
 ### **Неделя 1: Setup**
 
-- [ ] Python 3.11, Docker, PostgreSQL, Redis
+- [X] Python 3.11, Docker, PostgreSQL, Redis
 - [ ] GitHub repo + docker-compose
 - [ ] Pydantic схемы
 

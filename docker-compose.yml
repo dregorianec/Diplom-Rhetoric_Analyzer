@@ -12,7 +12,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rhetoric_user"]
+      test: ["CMD-SHELL", "pg_isready -U rhetoric_user -d rhetoric_db"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -54,6 +54,10 @@ services:
       context: ./services/ingest
       dockerfile: Dockerfile
     container_name: rhetoric_ingest
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     environment:
       DATABASE_URL: postgresql://rhetoric_user:rhetoric_pass@postgres:5432/rhetoric_db
       REDIS_URL: redis://redis:6379/0
@@ -123,6 +127,9 @@ services:
       dockerfile: Dockerfile
     container_name: rhetoric_celery_worker
     command: celery -A tasks worker --loglevel=info
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     environment:
       DATABASE_URL: postgresql://rhetoric_user:rhetoric_pass@postgres:5432/rhetoric_db
       REDIS_URL: redis://redis:6379/0
@@ -142,6 +149,9 @@ services:
       context: ./services/dashboard
       dockerfile: Dockerfile
     container_name: rhetoric_dashboard
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     environment:
       INGEST_API: http://ingest:8000
       TRANSCRIBE_API: http://transcribe:8000
@@ -160,4 +170,3 @@ services:
 volumes:
   postgres_data:
   minio_data:
-
