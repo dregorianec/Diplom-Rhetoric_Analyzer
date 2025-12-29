@@ -1,0 +1,163 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: rhetoric_postgres
+    environment:
+      POSTGRES_USER: rhetoric_user
+      POSTGRES_PASSWORD: rhetoric_pass
+      POSTGRES_DB: rhetoric_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rhetoric_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (Message Broker & Cache)
+  redis:
+    image: redis:7-alpine
+    container_name: rhetoric_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO (Object Storage)
+  minio:
+    image: minio/minio:latest
+    container_name: rhetoric_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio_admin
+      MINIO_ROOT_PASSWORD: minio_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Ingest Service
+  ingest:
+    build:
+      context: ./services/ingest
+      dockerfile: Dockerfile
+    container_name: rhetoric_ingest
+    environment:
+      DATABASE_URL: postgresql://rhetoric_user:rhetoric_pass@postgres:5432/rhetoric_db
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minio_admin
+      MINIO_SECRET_KEY: minio_password
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./services/ingest:/app
+      - ./shared:/app/shared
+
+  # Transcribe Service
+  transcribe:
+    build:
+      context: ./services/transcribe
+      dockerfile: Dockerfile
+    container_name: rhetoric_transcribe
+    environment:
+      DATABASE_URL: postgresql://rhetoric_user:rhetoric_pass@postgres:5432/rhetoric_db
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minio_admin
+      MINIO_SECRET_KEY: minio_password
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/transcribe:/app
+      - ./shared:/app/shared
+
+  # Analyze Service
+  analyze:
+    build:
+      context: ./services/analyze
+      dockerfile: Dockerfile
+    container_name: rhetoric_analyze
+    environment:
+      DATABASE_URL: postgresql://rhetoric_user:rhetoric_pass@postgres:5432/rhetoric_db
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8003:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./services/analyze:/app
+      - ./shared:/app/shared
+
+  # Celery Worker
+  celery_worker:
+    build:
+      context: ./services/ingest
+      dockerfile: Dockerfile
+    container_name: rhetoric_celery_worker
+    command: celery -A tasks worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://rhetoric_user:rhetoric_pass@postgres:5432/rhetoric_db
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minio_admin
+      MINIO_SECRET_KEY: minio_password
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./services/ingest:/app
+      - ./shared:/app/shared
+
+  # Dashboard (Streamlit)
+  dashboard:
+    build:
+      context: ./services/dashboard
+      dockerfile: Dockerfile
+    container_name: rhetoric_dashboard
+    environment:
+      INGEST_API: http://ingest:8000
+      TRANSCRIBE_API: http://transcribe:8000
+      ANALYZE_API: http://analyze:8000
+      DATABASE_URL: postgresql://rhetoric_user:rhetoric_pass@postgres:5432/rhetoric_db
+    ports:
+      - "8501:8501"
+    depends_on:
+      - ingest
+      - transcribe
+      - analyze
+    volumes:
+      - ./services/dashboard:/app
+      - ./shared:/app/shared
+
+volumes:
+  postgres_data:
+  minio_data:
+

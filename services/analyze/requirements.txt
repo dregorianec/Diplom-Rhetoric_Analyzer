@@ -1,0 +1,13 @@
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+sqlalchemy>=2.0.25
+psycopg2-binary>=2.9.9
+redis>=5.0.1
+celery>=5.3.6
+# ML dependencies (will be added when implementing)
+# transformers
+# torch
+# sentence-transformers
+# faiss-cpu
+
