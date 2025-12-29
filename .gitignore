@@ -1,1 +1,27 @@
-"__pycache__/`n*.pyc`n.env`n*.log`nvenv/`n.venv/" 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+.env
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+.env.local
+.env.*.local
