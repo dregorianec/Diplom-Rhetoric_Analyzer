@@ -1,0 +1,68 @@
+# ============================================
+# DPL: Political Rhetoric Analyzer
+# GPU Version with CUDA support for Whisper
+# ============================================
+
+# Используем PyTorch образ с CUDA
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    git-lfs \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && git lfs install
+
+# Копируем requirements
+COPY requirements.txt .
+
+# Устанавливаем зависимости (без torch - он уже в образе)
+RUN pip install --no-cache-dir \
+    "langchain-openai>=0.2.5" \
+    "langchain-core>=0.3.15" \
+    "pydantic>=2.9.0" \
+    "pydantic-settings>=2.5.0" \
+    "python-dotenv>=1.0.0" \
+    "requests>=2.31.0" \
+    "tiktoken>=0.7.0" \
+    "tqdm>=4.66.0" \
+    "numpy>=1.26.0" \
+    "matplotlib>=3.9.0" \
+    "yt-dlp>=2024.8.0" \
+    "transformers>=4.44.0" \
+    "accelerate>=0.33.0" \
+    "librosa>=0.10.0" \
+    "soundfile>=0.12.0"
+
+# Копируем исходный код
+COPY src ./src
+COPY README.md .
+COPY env.example .
+
+# Создаём директории
+RUN mkdir -p /app/data/videos \
+             /app/data/transcripts \
+             /app/data/results \
+             /app/models/whisper
+
+# Volumes
+VOLUME ["/app/data", "/app/models"]
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import torch; print('CUDA:', torch.cuda.is_available())" || exit 1
+
+# Entry point
+ENTRYPOINT ["python", "-m", "src.app"]
+CMD ["--help"]

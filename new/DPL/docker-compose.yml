@@ -1,0 +1,99 @@
+# ============================================
+# DPL: Political Rhetoric Analyzer
+# Docker Compose configuration
+# ============================================
+
+services:
+  # === Main Application ===
+  dpl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dpl-analyzer
+    
+    # Environment
+    env_file:
+      - .env
+    
+    environment:
+      # LM Studio запущен на хосте - используем host.docker.internal
+      - LLM_API_BASE=http://host.docker.internal:1234/v1
+      # Whisper настройки
+      - WHISPER_MODEL_PATH=/app/models/whisper
+      - WHISPER_DEVICE=cpu
+      - WHISPER_COMPUTE_TYPE=float32
+    
+    # Volumes
+    volumes:
+      # Данные (видео, транскрипты, результаты)
+      - ./data:/app/data
+      # Модель Whisper (клонировать заранее!)
+      - ./models/whisper:/app/models/whisper:ro
+      # .env файл
+      - ./.env:/app/.env:ro
+    
+    # Networking
+    extra_hosts:
+      # Для доступа к LM Studio на хосте
+      - "host.docker.internal:host-gateway"
+    
+    # Interactive mode для CLI
+    stdin_open: true
+    tty: true
+    
+    # Working directory
+    working_dir: /app
+    
+    # Default command
+    command: ["--help"]
+
+
+  # === GPU Version (NVIDIA) ===
+  dpl-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: dpl-analyzer-gpu
+    
+    env_file:
+      - .env
+    
+    environment:
+      - LLM_API_BASE=http://host.docker.internal:1234/v1
+      - WHISPER_MODEL_PATH=/app/models/whisper
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE_TYPE=float16
+    
+    volumes:
+      - ./data:/app/data
+      - ./models/whisper:/app/models/whisper:ro
+      - ./.env:/app/.env:ro
+    
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    # NVIDIA GPU support
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    stdin_open: true
+    tty: true
+    working_dir: /app
+    command: ["--help"]
+    
+    # Профиль - запускается только явно
+    profiles:
+      - gpu
+
+
+# ============================================
+# Named volumes (optional)
+# ============================================
+volumes:
+  dpl-data:
+    driver: local

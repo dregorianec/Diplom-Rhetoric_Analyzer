@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# Project specific
+# Модели Whisper (слишком большие для git, нужно использовать git-lfs или скачивать отдельно)
+models/whisper/
+
+# Данные (опционально, можно коммитить примеры)
+# Исключаем большие файлы
+data/videos/*.wav
+data/videos/*.mp4
+data/videos/*.mp3
+# Результаты анализа (можно оставить примеры, но не все)
+# data/results/*.json
+# data/results/*.png
+
+# Cursor IDE
+.cursor/
+
+# Docker
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp

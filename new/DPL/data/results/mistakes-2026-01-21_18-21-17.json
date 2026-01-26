@@ -1,0 +1,14 @@
+[
+  {
+    "group_idx": 4,
+    "speaker_slug": "speaker",
+    "mistake_slug": "hyperbole",
+    "group_start_char_id": 0,
+    "group_end_char_id": 486,
+    "chunk_start_char_id": 367,
+    "chunk_end_char_id": 486,
+    "reason": "The claim that \"Nothing like that has ever happened medically\" is an exaggerated statement implying absolute uniqueness, which likely overstates the situation.",
+    "how_starts": "\"Nothing like that has ever happened medically\"",
+    "how_ends": "\"and it's having a big effect.\""
+  }
+]
